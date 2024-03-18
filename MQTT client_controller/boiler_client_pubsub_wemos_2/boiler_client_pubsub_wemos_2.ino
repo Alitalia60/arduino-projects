@@ -1,8 +1,15 @@
+#define LCD_ENABLE
+
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
 #include <DallasTemperature.h>
 #include <OneWire.h>
 #include <EEPROM.h>
+
+#ifdef LCD_ENABLE
+#include <LiquidCrystal_I2C.h>
+#endif
+
 
 #define ON true
 #define OFF false
@@ -10,10 +17,12 @@
 #define RELAY_OFF HIGH
 
 // ***************** Relays ***************************/
-#define PIN_GK_RELAY 5
+// #define PIN_GK_RELAY 5
+#define PIN_GK_RELAY 14
 
 //реле блокировки комнатного датчика - нормально замкнуто
-#define PIN_GK_BLOCK 4
+// #define PIN_GK_BLOCK 4
+#define PIN_GK_BLOCK 16
 
 #define PIN_TTK_RELAY 13
 
@@ -42,13 +51,24 @@ OneWire oneWire(2);
 DallasTemperature tempSensors(&oneWire);
 DeviceAddress GKSensorAddress, TTKSensorAddress;
 
+
+// ******************* LCD 1602 *****************************
+#ifdef LCD_ENABLE
+/*
+питание +5v
+SDA	-> A4
+SCL	-> A5
+*/
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+#endif
+
 //температуры начальные
 int8_t room_current = 0;
 int8_t room_target = 17;
 int8_t ttk_current = 0;
 int8_t gk_current = 0;
 int8_t ttk_cold = 35;  // Ниже этой температуры можно выключать работающий насос ТТК
-int8_t ttk_max = 70;  // Выше этой температуры - ТРЕВОГА
+int8_t ttk_max = 70;   // Выше этой температуры - ТРЕВОГА
 
 unsigned long prevTimer = 0;      // Variable used to keep track of the previous timer value
 unsigned long actualTimer = 0;    // Variable used to keep track of the current timer value
@@ -107,10 +127,21 @@ void setup_wifi() {
     delay(500);
     Serial.print(".");
   }
+
+
   Serial.println("");
   Serial.println("WiFi connected");
   Serial.println("IP address: ");
   Serial.println(WiFi.localIP());
+
+#ifdef LCD_ENABLE
+  lcd.clear();
+  lcd.setCursor(1, 0);
+  lcd.print("WiFi connected");
+  lcd.setCursor(3, 1);
+  lcd.print(WiFi.localIP());
+  // delay(1000);
+#endif
 
   WiFi.setAutoReconnect(true);
   WiFi.persistent(true);
@@ -146,6 +177,15 @@ void handle_controller() {
   digitalWrite(PIN_GK_BLOCK, controller_is_active ? RELAY_ON : RELAY_OFF);
   client.publish("main/controller-status", controller_is_active ? "on" : "off");
   Serial.println(controller_is_active ? "Controller is ENABLED" : "Controller is DISABLED");
+
+#ifdef LCD_ENABLE
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Controller is");
+  lcd.setCursor(0, 1);
+  lcd.print(controller_is_active ? "ENABLED" : "DISABLED");
+  // delay(1000);
+#endif
 }
 
 // ***********************************************
@@ -172,6 +212,13 @@ void handle_gk() {
     // Serial.println("gk_relay = RELAY_OFF");
   }
   client.publish("main/gk-status", gk_is_on ? "on" : "off");
+
+#ifdef LCD_ENABLE
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print(gk_is_on ? "GK is ON" : "GK is OFF");
+  // delay(1000);
+#endif
 }
 
 // ***********************************************
@@ -187,7 +234,7 @@ void handle_ttk() {
       digitalWrite(PIN_TTK_RELAY, RELAY_ON);
       ttk_is_waiting = "";
     }
-  } else if (ttk_is_waiting == "off"){
+  } else if (ttk_is_waiting == "off") {
     if (ttk_current < ttk_cold) {
       //если ТТК остыл - можно выключать
       ttk_is_on = false;
@@ -196,6 +243,13 @@ void handle_ttk() {
     }
   }
   client.publish("main/ttk-status", ttk_is_on ? "on" : "off");
+
+#ifdef LCD_ENABLE
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print(ttk_is_on ? "TTK is ON" : "TTK is OFF");
+  // delay(1000);
+#endif
 }
 
 // ***********************************************
@@ -210,6 +264,13 @@ void handle_boiler() {
     boiler_is_on = false;
   }
   client.publish("main/boiler-status", boiler_is_on ? "on" : "off");
+
+#ifdef LCD_ENABLE
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print(boiler_is_on ? "Boiler is ON" : "Boiler is OFF");
+  // delay(1000);
+#endif
 }
 
 // ***********************************************
@@ -224,6 +285,21 @@ void handle_message(char* topic, byte* payload, unsigned int length) {
 
   //================= Room =====================
   if (String(topic) == "room-sensor/current-temp") {
+
+
+#ifdef LCD_ENABLE
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("ROOM   GK   TTK");
+    lcd.setCursor(1, 1);
+    lcd.print(room_current);
+    lcd.setCursor(6, 1);
+    lcd.print(gk_current);
+    lcd.setCursor(12, 1);
+    lcd.print(ttk_current);
+    // delay(1000);
+#endif
+
     room_current = pl.toInt();
     if (controller_is_active) {
       if (room_current < room_target) {
@@ -251,7 +327,6 @@ void handle_message(char* topic, byte* payload, unsigned int length) {
       EEPROM.commit();  // для esp8266/esp32
       room_target = recieved_room_target;
     }
-
   }
 
   //================= ТТК =====================
@@ -326,6 +401,14 @@ void initialization() {
   digitalWrite(PIN_TTK_RELAY, RELAY_OFF);
   // водонагреватель реле нормально замкнутые контакты
   digitalWrite(PIN_BOILER_RELAY, RELAY_OFF);
+
+#ifdef LCD_ENABLE
+  lcd.init();
+  lcd.backlight();
+  lcd.setCursor(0, 0);
+  lcd.print("initialization");
+  delay(1000);
+#endif
 }
 // ***********************************************
 void setup() {
@@ -366,8 +449,7 @@ void setup() {
     // Serial.println("setup: EEPROM write room_target");
     EEPROM.put(4, room_target);
     EEPROM.commit();  // для esp8266/esp32
-  }
-  else{
+  } else {
     room_target = _room_target;
   }
 
@@ -412,7 +494,7 @@ void loop() {
 
 
     if (controller_is_waiting != "") {
-      
+
       Serial.print("contoller is waiting to = ");
       Serial.println(controller_is_waiting);
       Serial.println();
@@ -420,10 +502,12 @@ void loop() {
     }
 
     if (controller_is_active) {
-      if (room_current < room_target) {
-        gk_is_waiting = "on";
-      } else {
-        gk_is_waiting = "off";
+      if (!ttk_is_on) {
+        if (room_current < room_target) {
+          gk_is_waiting = "on";
+        } else {
+          gk_is_waiting = "off";
+        }
       }
     }
 
