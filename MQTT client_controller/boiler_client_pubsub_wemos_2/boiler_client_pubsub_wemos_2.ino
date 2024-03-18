@@ -48,6 +48,7 @@ int8_t room_target = 17;
 int8_t ttk_current = 0;
 int8_t gk_current = 0;
 int8_t ttk_cold = 35;  // Ниже этой температуры можно выключать работающий насос ТТК
+int8_t ttk_max = 70;  // Выше этой температуры - ТРЕВОГА
 
 unsigned long prevTimer = 0;      // Variable used to keep track of the previous timer value
 unsigned long actualTimer = 0;    // Variable used to keep track of the current timer value
@@ -72,9 +73,6 @@ bool boiler_is_on = false;
 void reconnect() {
   // Loop until we're reconnected
   while (!client.connected()) {
-    Serial.println("");
-    Serial.print("cliaent state = ");
-    Serial.println(client.state());
     // Attempt to connect
     // if (client.connect("main-controller", "alita60", "11071960")) {
     if (client.connect("main-controller")) {
@@ -130,9 +128,6 @@ void handle_controller() {
     //Выключить контроллер можно только при холодном ТТК
     ttk_is_waiting = "off";
     gk_is_waiting = "off";
-    // gk_is_on = false;
-    // digitalWrite(PIN_GK_BLOCK, RELAY_OFF);
-    // digitalWrite(PIN_GK_RELAY, RELAY_OFF);
     digitalWrite(PIN_BOILER_RELAY, RELAY_OFF);  // Бойлер работает автономно, реле бойлера нормально замкнуто
     if (ttk_current < ttk_cold) {
       controller_is_active = false;
@@ -148,7 +143,9 @@ void handle_controller() {
     Serial.println(controller_is_active);
   }
   digitalWrite(LED_ON, controller_is_active ? LOW : HIGH);
+  digitalWrite(PIN_GK_BLOCK, controller_is_active ? RELAY_ON : RELAY_OFF);
   client.publish("main/controller-status", controller_is_active ? "on" : "off");
+  Serial.println(controller_is_active ? "Controller is ENABLED" : "Controller is DISABLED");
 }
 
 // ***********************************************
@@ -219,18 +216,11 @@ void handle_boiler() {
 void handle_message(char* topic, byte* payload, unsigned int length) {
 
   String str_topic = String(topic);
-  // Serial.println();
-  // Serial.print("message topic= ");
-  // Serial.println(topic);
-  // Serial.println(str_topic);
-  // Serial.println();
-  // Serial.print("message payload= ");
   String pl;
 
   for (int i = 0; i < length; i++) {
     pl += (char)payload[i];
   }
-  // Serial.print(pl);
 
   //================= Room =====================
   if (String(topic) == "room-sensor/current-temp") {
@@ -250,16 +240,18 @@ void handle_message(char* topic, byte* payload, unsigned int length) {
 
   //================= Room target temp=====================
   if (String(topic) == "main/room-target-temp") {
-    room_target = pl.toInt();
-    int8_t new_room_target = 0;
-    EEPROM.get(4, new_room_target);
-    if (new_room_target != room_target) {
-      EEPROM.put(4, room_target);
+
+    int recieved_room_target = pl.toInt();
+
+    int8_t _room_target = 0;
+    EEPROM.get(4, _room_target);
+
+    if (_room_target != recieved_room_target) {
+      EEPROM.put(4, recieved_room_target);
       EEPROM.commit();  // для esp8266/esp32
+      room_target = recieved_room_target;
     }
-    Serial.print("new room target = ");
-    Serial.println(room_target);
-    Serial.println("------------------------------");
+
   }
 
   //================= ТТК =====================
@@ -314,10 +306,6 @@ void handle_message(char* topic, byte* payload, unsigned int length) {
         gk_is_waiting = "off";
       }
     }
-    Serial.print("topic = ");
-    Serial.println(String(topic));
-    Serial.print(" / ");
-    Serial.println(pl);
   }
 }
 
@@ -368,25 +356,28 @@ void setup() {
     controller_is_active = false;
     EEPROM.put(0, 0);
   }
-  Serial.println(controller_is_active ? "Controller ENABLE" : "Controller DISABLE");
+  Serial.println(controller_is_active ? "Controller is ENABLED" : "Controller is DISABLED");
   Serial.println("------------------------------");
 
   // первоначальная установка / чтение заданной температуры для комнаты
-  EEPROM.get(4, room_target);
-  if (room_target <= 0) {
-    EEPROM.put(4, 17);
+  int8_t _room_target = 0;
+  EEPROM.get(4, _room_target);
+  if (_room_target <= 10) {
+    // Serial.println("setup: EEPROM write room_target");
+    EEPROM.put(4, room_target);
     EEPROM.commit();  // для esp8266/esp32
+  }
+  else{
+    room_target = _room_target;
   }
 
   String str_room_target;
-  char ch_room_target[2];
+  char ch_room_target[4];
   str_room_target = String(room_target);
-  str_room_target.toCharArray(ch_room_target, 2);
+  str_room_target.toCharArray(ch_room_target, 4);
+
   client.publish("main/room-target-temp", ch_room_target);
 
-  Serial.print("start room target = ");
-  Serial.println(room_target);
-  Serial.println("------------------------------");
   client.publish("main/controller-status", controller_is_active ? "on" : "off");
   client.publish("main/gk-status", gk_is_on ? "on" : "off");
   client.publish("main/ttk-status", ttk_is_on ? "on" : "off");
@@ -417,11 +408,11 @@ void loop() {
 
   if (actualTimer - prevTimer >= intTimer) {
     prevTimer = actualTimer;
-    Serial.println("...loop");
+    // Serial.println("...loop");
 
 
     if (controller_is_waiting != "") {
-      Serial.println(controller_is_active ? "Controller ENABLE" : "Controller DISABLE");
+      
       Serial.print("contoller is waiting to = ");
       Serial.println(controller_is_waiting);
       Serial.println();
