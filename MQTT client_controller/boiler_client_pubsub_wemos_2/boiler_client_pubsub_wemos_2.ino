@@ -209,6 +209,7 @@ void handle_gk() {
     // gk_relay = RELAY_OFF;
     gk_is_on = false;
     digitalWrite(PIN_GK_RELAY, RELAY_OFF);
+    gk_is_waiting = "";
     // Serial.println("gk_relay = RELAY_OFF");
   }
   client.publish("main/gk-status", gk_is_on ? "on" : "off");
@@ -227,12 +228,14 @@ void handle_ttk() {
     /*
   выключить  ГК, выждать 2 мин
   */
-    if (actualTimer - gkPrevTimer >= gkWaitTimer) {
-      gkPrevTimer = actualTimer;
-      //можно включать насос ТТК
-      ttk_is_on = true;
-      digitalWrite(PIN_TTK_RELAY, RELAY_ON);
-      ttk_is_waiting = "";
+    if (!gk_is_on) {
+      if (actualTimer - gkPrevTimer >= gkWaitTimer) {
+        gkPrevTimer = actualTimer;
+        //можно включать насос ТТК
+        ttk_is_on = true;
+        digitalWrite(PIN_TTK_RELAY, RELAY_ON);
+        ttk_is_waiting = "";
+      }
     }
   } else if (ttk_is_waiting == "off") {
     if (ttk_current < ttk_cold) {
@@ -318,6 +321,8 @@ void handle_message(char* topic, byte* payload, unsigned int length) {
   if (String(topic) == "main/room-target-temp") {
 
     int recieved_room_target = pl.toInt();
+    recieved_room_target = min(recieved_room_target, 25);
+    recieved_room_target = max(recieved_room_target, 10);
 
     int8_t _room_target = 0;
     EEPROM.get(4, _room_target);
@@ -331,10 +336,9 @@ void handle_message(char* topic, byte* payload, unsigned int length) {
 
   //================= ТТК =====================
   if (String(topic) == "main/ttk") {
-    // ttk_is_waiting = true;
-
     if (pl.indexOf("on") >= 0) {
       ttk_is_waiting = "on";
+      gk_is_waiting = "off";
       // сразу выключить ГК
       digitalWrite(PIN_GK_RELAY, RELAY_OFF);
       // выжидать 2 мин до включения ТТК
@@ -348,6 +352,7 @@ void handle_message(char* topic, byte* payload, unsigned int length) {
   if (String(topic) == "main/gk") {
     // gk_is_waiting = true;
     if (pl.indexOf("on") >= 0) {
+      ttk_is_waiting = "off";
       gk_is_waiting = "on";
     } else if (pl.indexOf("off") >= 0) {
       gk_is_waiting = "off";
@@ -380,6 +385,23 @@ void handle_message(char* topic, byte* payload, unsigned int length) {
       if (gk_is_on) {
         gk_is_waiting = "off";
       }
+    }
+  }
+  //=================statuses=====================
+  if (String(topic) == "main/controller") {
+    if (pl.indexOf("get-status") >= 0) {
+      client.publish("main/controller-status", controller_is_active ? "on" : "off");
+      client.publish("main/gk-status", gk_is_on ? "on" : "off");
+      client.publish("main/ttk-status", ttk_is_on ? "on" : "off");
+      client.publish("main/boiler-status", boiler_is_on ? "on" : "off");
+      
+      char _payload[10];
+      dtostrf(gk_current, 6, 2, _payload);
+      client.publish("main/gk-current-temp", _payload);
+      dtostrf(room_target, 6, 2, _payload);
+      client.publish("main/room-target-temp", _payload);
+      dtostrf(ttk_current, 6, 2, _payload);
+      client.publish("main/ttk-current", _payload);
     }
   }
 }
