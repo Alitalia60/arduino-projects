@@ -134,14 +134,14 @@ void setup_wifi() {
   Serial.println("IP address: ");
   Serial.println(WiFi.localIP());
 
-#ifdef LCD_ENABLE
+  #ifdef LCD_ENABLE
   lcd.clear();
   lcd.setCursor(1, 0);
   lcd.print("WiFi connected");
   lcd.setCursor(3, 1);
   lcd.print(WiFi.localIP());
   // delay(1000);
-#endif
+  #endif
 
   WiFi.setAutoReconnect(true);
   WiFi.persistent(true);
@@ -178,14 +178,14 @@ void handle_controller() {
   client.publish("main/controller-status", controller_is_active ? "on" : "off");
   Serial.println(controller_is_active ? "Controller is ENABLED" : "Controller is DISABLED");
 
-#ifdef LCD_ENABLE
+ #ifdef LCD_ENABLE
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print("Controller is");
   lcd.setCursor(0, 1);
   lcd.print(controller_is_active ? "ENABLED" : "DISABLED");
   // delay(1000);
-#endif
+ #endif
 }
 
 // ***********************************************
@@ -214,12 +214,12 @@ void handle_gk() {
   }
   client.publish("main/gk-status", gk_is_on ? "on" : "off");
 
-#ifdef LCD_ENABLE
+ #ifdef LCD_ENABLE
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print(gk_is_on ? "GK is ON" : "GK is OFF");
   // delay(1000);
-#endif
+ #endif
 }
 
 // ***********************************************
@@ -247,12 +247,12 @@ void handle_ttk() {
   }
   client.publish("main/ttk-status", ttk_is_on ? "on" : "off");
 
-#ifdef LCD_ENABLE
+ #ifdef LCD_ENABLE
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print(ttk_is_on ? "TTK is ON" : "TTK is OFF");
   // delay(1000);
-#endif
+ #endif
 }
 
 // ***********************************************
@@ -268,12 +268,12 @@ void handle_boiler() {
   }
   client.publish("main/boiler-status", boiler_is_on ? "on" : "off");
 
-#ifdef LCD_ENABLE
+ #ifdef LCD_ENABLE
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print(boiler_is_on ? "Boiler is ON" : "Boiler is OFF");
   // delay(1000);
-#endif
+ #endif
 }
 
 // ***********************************************
@@ -290,7 +290,7 @@ void handle_message(char* topic, byte* payload, unsigned int length) {
   if (String(topic) == "room-sensor/current-temp") {
 
 
-#ifdef LCD_ENABLE
+  #ifdef LCD_ENABLE
     lcd.clear();
     lcd.setCursor(0, 0);
     lcd.print("ROOM   GK   TTK");
@@ -301,7 +301,7 @@ void handle_message(char* topic, byte* payload, unsigned int length) {
     lcd.setCursor(12, 1);
     lcd.print(ttk_current);
     // delay(1000);
-#endif
+  #endif
 
     room_current = pl.toInt();
     if (controller_is_active) {
