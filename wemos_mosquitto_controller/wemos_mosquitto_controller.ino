@@ -1,7 +1,4 @@
-#define LCD_ENABLE
-#define DEBUG_MODE
-#define VERSION "16.04.2024"
-
+#define DEBUG_ENABLE
 
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
@@ -13,8 +10,8 @@
 
 #include <EMailSender.h>
 
-#include <Bounce2.h>
-
+#define ON true
+#define OFF false
 #define RELAY_ON LOW
 #define RELAY_OFF HIGH
 
@@ -32,16 +29,13 @@
 #define PIN_BOILER_RELAY 12
 
 // кнопка включения насоса ТТК on/off
-#define PIN_BUTTON 0  // при нажатии на пин подается земля
+#define PIN_BUTTON_TTK 0  // при нажатии на пин подается земля
 // когда светодиод горит - управление от контроллера
 #define LED_ON 15  // GREEN
 
-const char *pswd = "06019013";
-#ifdef DEBUG_MODE
-const char *ssid = "TP-Link_3AAA";  // Название Вашей WiFi сети
-#else
+// const char *ssid = "TP-Link_3AAA";  // Название Вашей WiFi сети
 const char *ssid = "MT-PON-LITA";
-#endif
+const char *pswd = "06019013";
 
 // Use WiFiClient class to create TCP connections
 WiFiClient wi_fi_client;
@@ -65,30 +59,21 @@ LiquidCrystal_I2C lcd(0x27, 16, 2);
 // ******************* emailSend *****************************
 EMailSender emailSend("lita.private@bk.ru", "9EVNjcMrrc513mN9eKBk", "lita.private@bk.ru", "smtp.mail.ru", 465);
 
-Bounce debouncer = Bounce();
-
 // температуры начальные
-int8_t room_current = -127;
+int8_t room_current = 0;
 int8_t room_target = 17;
-int8_t ttk_current = -127;
-int8_t gk_current = -127;
+int8_t ttk_current = 0;
+int8_t gk_current = 0;
 int8_t ttk_cold = 35;  // Ниже этой температуры можно выключать работающий насос ТТК
 int8_t ttk_max = 70;   // Выше этой температуры - ТРЕВОГА
-
-bool gk_sensor_ready = false;
-bool ttk_sensor_ready = false;
-bool room_sensor_ready = false;
 
 unsigned long prevTimer = 0;      // Variable used to keep track of the previous timer value
 unsigned long actualTimer = 0;    // Variable used to keep track of the current timer value
 unsigned long actualTimerGk = 0;  // Variable used to keep track of the current timer value
-const long intTimer = 30000;      // Период опроса датчиков
+const long intTimer = 15000;      // Период опроса датчиков
 
 unsigned long prevBrokerTimer = 0;   //
 const long intBrokerTimer = 600000;  // Период попытки подключения  брокера  10 мин
-
-unsigned long prevLedTimer = 0;   // Мигание светодиода
-const long blinkInterval = 1000;  // Мигание светодиода
 
 unsigned long gkPrevTimer = 0;
 const long gkWaitTimer = 30000;  // время для выбега насоса ГК после его выключения
@@ -97,7 +82,7 @@ bool controller_is_active = false;
 String controller_is_waiting = "";
 String ttk_is_waiting = "";
 String gk_is_waiting = "";
-
+String boiler_is_waiting = "";
 bool ttk_is_on = false;
 bool gk_is_on = false;
 bool boiler_is_on = false;
@@ -108,16 +93,12 @@ int8_t max_attempts = 5;  //макс число попыток соединит�
 // int8_t max_attempts = 2;  //макс число попыток соединиться с брокером
 bool broker_is_online = false;
 
-#ifdef DEBUG_MODE
-const char *broker = "main-o7w3w";
-#else
-const char *broker = "main-controller";
-#endif
-
+const char *broker_url = "localhost";
 
 
 // ********************************************************
 void send_email() {
+#ifndef DEBUG_ENABLE
   EMailSender::EMailMessage message;
   message.subject = "MQQT broker";
   message.message = "controller Lost MQQT broker";
@@ -129,6 +110,7 @@ void send_email() {
   Serial.println(resp.status);
   Serial.println(resp.code);
   Serial.println(resp.desc);
+#endif
 }
 // ********************************************************
 void reconnect() {
@@ -138,10 +120,9 @@ void reconnect() {
     Serial.print("Attempt remained =");
     Serial.println(attempt);
     // Attempt to connect
-    if (client.connect(broker)) {
-      // Serial.println("Connected MQTT 'main-controller-test'");
-      Serial.print("Connected MQTT: ");
-      Serial.println(broker);
+    if (client.connect("main-controller", "alita60", "11071960")) {
+      // if (client.connect("main-controller")) {
+      Serial.println("Connected MQTT 'main-controller'");
       if (!client.subscribe("main/#")) {
         Serial.println("subscribe 'main' - false");
       }
@@ -198,20 +179,16 @@ void setup_wifi() {
 // ***********************************************
 void handle_controller() {
   // Serial.println("DEBUG: handle_controller");
-  show_lcd_status("Controller", controller_is_waiting);
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Controller is waiting: ");
+  lcd.setCursor(4, 1);
+  lcd.print(controller_is_waiting);
 
   if (controller_is_waiting == "on") {
-    if (room_sensor_ready){
-      controller_is_active = true;
-      controller_is_waiting = "";
-      Block_roomSensor();
-    }
-    else {
-      Serial.println("room sensor not ready");
-      controller_is_active = false;
-      controller_is_waiting = "";
-    }
-    // digitalWrite(PIN_GK_BLOCK, RELAY_ON);
+    controller_is_active = true;
+    controller_is_waiting = "";
+    digitalWrite(PIN_GK_BLOCK, RELAY_ON);
   } else if (controller_is_waiting == "off") {
     // Выключить контроллер можно только при холодном ТТК
     ttk_is_waiting = "off";
@@ -219,15 +196,18 @@ void handle_controller() {
     // gk_is_on = false;
     gk_is_waiting = "off";
     // бойлер д.б. включен
-    boiler_is_on = boiler_on();
-
+    if (!boiler_is_on) {
+      digitalWrite(PIN_BOILER_RELAY, RELAY_OFF);  // Бойлер работает автономно, реле бойлера нормально замкнуто
+    }
     if (ttk_current < ttk_cold) {  // Котел ТТК остыл
       controller_is_active = false;
       controller_is_waiting = "";
-      // digitalWrite(PIN_GK_BLOCK, RELAY_OFF);
-      UnBlock_roomSensor();
-      ttk_is_on = ttk_off();
-      ttk_is_waiting = "";
+      digitalWrite(PIN_GK_BLOCK, RELAY_OFF);
+      if (ttk_is_on) {
+        ttk_is_on = false;
+        digitalWrite(PIN_TTK_RELAY, RELAY_OFF);
+        ttk_is_waiting = "";
+      }
     }
   }
   bool is_active = false;
@@ -239,12 +219,13 @@ void handle_controller() {
     Serial.println(controller_is_active);
   }
 
-
+  digitalWrite(LED_ON, !controller_is_active ? LOW : HIGH);
   if (broker_is_online) {
-    // Serial.println("8. publish");
     client.publish("main/controller-status", controller_is_active ? "on" : "off");
   }
   Serial.println(controller_is_active ? "Controller is ENABLED" : "Controller is DISABLED");
+
+  // delay(1000);
 }
 
 // ***********************************************
@@ -253,52 +234,60 @@ void handle_gk() {
   /* при включении ГК:
     - температура ТТК менее 35, иначе продолжать ждать остывания
     - насос ТТК отключить
-      */
-
-  show_lcd_status("GK", gk_is_waiting);
+   */
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("GK is waiting: ");
+  lcd.setCursor(4, 1);
+  lcd.print(gk_is_waiting);
 
   if (gk_is_waiting == "on") {
-
     if (!ttk_is_on) {
-      Serial.println("handle_gk: ГК ожидает включения, и если ТТК выключен - включаем ГК");
-      gk_is_on = gk_on();
+      gk_is_on = true;
+      digitalWrite(PIN_GK_RELAY, RELAY_ON);
       gk_is_waiting = "";
-
     } else {
-      Serial.println("handle_gk: ГК ожидает включения, и если ТТК работает");
       // Работает ТТК, проверяем остывание
       if (ttk_current < ttk_cold) {
-        Serial.println("handle_gk: ГК ожидает включения, и если ТТК работает и темп ТТК ниже порога");
-        ttk_is_on = ttk_off();
-        gk_is_on = gk_on();
+        // gk_relay = RELAY_ON;
+        Serial.println("ttk_current < ttk_cold. It is allowed GK to be ON  ");
+        ttk_is_on = false;
+        gk_is_on = true;
+
+        digitalWrite(PIN_TTK_RELAY, RELAY_OFF);
+        digitalWrite(PIN_GK_RELAY, RELAY_ON);
+        // Serial.println("gk_relay = RELAY_ON");
         gk_is_waiting = "";
-      }else {
-        Serial.println("handle_gk: ГК ожидает включения, и если ТТК работает и ТТК еще горячий - ничего не делаем, ждем");
-
       }
-
     }
   } else if (gk_is_waiting == "off") {
-    gk_is_on = gk_off();
+    // gk_relay = RELAY_OFF;
+    gk_is_on = false;
+    digitalWrite(PIN_GK_RELAY, RELAY_OFF);
     gk_is_waiting = "";
+    // Serial.println("gk_relay = RELAY_OFF");
   }
 
   Serial.print("handle_gk: GK is ");
   Serial.println(gk_is_on ? "ON" : "OFF");
-  Serial.print("handle_gk: gk_is_waiting = ");
-  Serial.println(gk_is_waiting);
   if (broker_is_online) {
     client.publish("main/gk-status", gk_is_on ? "on" : "off");
-    // Serial.println("1. publish");
   }
-  // Serial.print("handle_gk: TEST gk_is_waiting === ");
-  Serial.println(gk_is_waiting);
+
+  // lcd.clear();
+  // lcd.setCursor(0, 0);
+  // lcd.print(gk_is_on ? "GK is ON" : "GK is OFF");
+  // delay(1000);
 }
 
 // ***********************************************
 void handle_ttk() {
   // Serial.println("DEBUG: handle_ttk");
-  show_lcd_status("TTK", ttk_is_waiting);
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("TTK is waiting: ");
+  lcd.setCursor(4, 1);
+  lcd.print(ttk_is_waiting);
 
   if (ttk_is_waiting == "on") {
     // Serial.println("DEBUG: handle_ttk. 1");
@@ -311,32 +300,31 @@ void handle_ttk() {
           // Serial.println("DEBUG: handle_ttk. 4");
           gkPrevTimer = actualTimer;
           // можно включать насос ТТК
-          ttk_is_on = ttk_on();
+          ttk_is_on = true;
+          digitalWrite(PIN_TTK_RELAY, RELAY_ON);
           ttk_is_waiting = "";
         }
       } else {
         // Serial.println("DEBUG: handle_ttk. 5");
         // Сначала отключим ГК
-
         gk_is_waiting = "off";
       }
       // Контроллер не активен- отказано включать ТТК
     } else {
-      Serial.println("Запрет ВКЛ ТТК. Контроллер не активен");
-      // ttk_is_on = ttk_off();
+      // Serial.println("DEBUG: handle_ttk. 6");
       ttk_is_waiting = "";
-      publish_statuses("ttk-status");
     }
   } else if (ttk_is_waiting == "off") {
-    Serial.println("DEBUG: handle_ttk. 7");
+    // Serial.println("DEBUG: handle_ttk. 7");
     if (ttk_current < ttk_cold) {
-      Serial.println("DEBUG: handle_ttk. 8");
+      // Serial.println("DEBUG: handle_ttk. 8");
       Serial.print("handle_ttk: ttk_current < ttk_cold ");
       // если ТТК остыл - можно выключать
-      ttk_is_on = ttk_off();
+      ttk_is_on = false;
+      digitalWrite(PIN_TTK_RELAY, RELAY_OFF);
       ttk_is_waiting = "";
     } else {
-      Serial.println("DEBUG: handle_ttk. 9");
+      // Serial.println("DEBUG: handle_ttk. 9");
       // Serial.print("handle_ttk: ttk HOT - waiting to OFF");
     }
   }
@@ -345,39 +333,56 @@ void handle_ttk() {
   Serial.println(ttk_is_on ? "ON" : "OFF");
   if (broker_is_online) {
     // Serial.println("DEBUG: handle_ttk. 10");
-    // Serial.println("2. publish");
     client.publish("main/ttk-status", ttk_is_on ? "on" : "off");
   }
-}
 
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print(ttk_is_on ? "TTK is ON" : "TTK is OFF");
+  // delay(1000);
+}
 
 // ***********************************************
-void publish_statuses(String id) {
-  if (id == "all") {
-    publish_statuses("controller-status");
-    publish_statuses("room-target-temp");
-    publish_statuses("gk-status");
-    publish_statuses("ttk-status");
-    publish_statuses("boiler-status");
+void handle_boiler() {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Boiler is waiting: ");
+  lcd.setCursor(4, 1);
+  lcd.print(boiler_is_waiting);
+
+  if (boiler_is_waiting == "on") {
+    digitalWrite(PIN_BOILER_RELAY, RELAY_OFF);
+    boiler_is_waiting = "";
+    boiler_is_on = true;
+  } else if (boiler_is_waiting == "off") {
+    digitalWrite(PIN_BOILER_RELAY, RELAY_ON);
+    boiler_is_waiting = "";
+    boiler_is_on = false;
   }
-  if (id == "controller-status") {
-    client.publish("main/controller-status", controller_is_active ? "on" : "off");
-  } else if (id == "room-target-temp") {
-    String str_room_target;
-    char ch_room_target[4];
-    str_room_target = String(room_target);
-    str_room_target.toCharArray(ch_room_target, 4);
-    client.publish("main/room-target-temp", ch_room_target);
-  } else if (id == "gk-status") {
-    client.publish("main/gk-status", gk_is_on ? "on" : "off");
-  } else if (id == "ttk-status") {
-    // Serial.println("Публикация статуса ТТК");
-    client.publish("main/ttk-status", ttk_is_on ? "on" : "off");
-  } else if (id == "boiler-status") {
+  if (broker_is_online) {
     client.publish("main/boiler-status", boiler_is_on ? "on" : "off");
   }
+
+
+  // lcd.clear();
+  // lcd.setCursor(0, 0);
+  // lcd.print(boiler_is_on ? "Boiler is ON" : "Boiler is OFF");
+  // delay(1000);
 }
 
+// ***********************************************
+void publish_statuses() {
+  String str_room_target;
+  char ch_room_target[4];
+  str_room_target = String(room_target);
+  str_room_target.toCharArray(ch_room_target, 4);
+
+  client.publish("main/room-target-temp", ch_room_target);
+  client.publish("main/controller-status", controller_is_active ? "on" : "off");
+  client.publish("main/gk-status", gk_is_on ? "on" : "off");
+  client.publish("main/ttk-status", ttk_is_on ? "on" : "off");
+  client.publish("main/boiler-status", boiler_is_on ? "on" : "off");
+}
 // ***********************************************
 void handle_message(char *topic, byte *payload, unsigned int length) {
 
@@ -387,6 +392,12 @@ void handle_message(char *topic, byte *payload, unsigned int length) {
   for (int i = 0; i < length; i++) {
     pl += (char)payload[i];
   }
+
+  // Serial.print("topic = ");
+  // Serial.println(topic);
+  // Serial.print("payload = ");
+  // Serial.println(pl);
+  // Serial.println("****");
 
   //================= Room =====================
   if (String(topic) == "room-sensor/current-temp") {
@@ -402,13 +413,8 @@ void handle_message(char *topic, byte *payload, unsigned int length) {
       lcd.setCursor(12, 1);
       lcd.print(ttk_current);
     }
-    if (room_current == -127){
-      room_sensor_ready = false;
-    }
-    else{room_sensor_ready = true;}
     room_current = pl.toInt();
   }
-
 
   //================= Room target temp=====================
   if (String(topic) == "main/room-target-temp") {
@@ -448,16 +454,15 @@ void handle_message(char *topic, byte *payload, unsigned int length) {
   //=================Бойлер=====================
   if (String(topic) == "main/boiler") {
     if (pl.indexOf("on") >= 0) {
-      boiler_is_on = boiler_on();
+      boiler_is_waiting = "on";
     } else if (pl.indexOf("off") >= 0) {
-      boiler_is_on = boiler_off();
+      boiler_is_waiting = "off";
     }
-    publish_statuses("boiler-status");
   }
 
   //=================Контроллер=====================
   if (String(topic) == "main/controller") {
-    // Serial.println("main/controller");
+    Serial.println("main/controller");
     if (pl.indexOf("on") >= 0) {
       controller_is_waiting = "on";
     } else if (pl.indexOf("off") >= 0) {
@@ -467,13 +472,21 @@ void handle_message(char *topic, byte *payload, unsigned int length) {
 
       //=================statuses=====================
     } else if (pl.indexOf("get-status") >= 0) {
-      publish_statuses("all");
+      Serial.println(pl);
+      publish_statuses();
+
+      char _payload[10];
+      dtostrf(gk_current, 6, 2, _payload);
+      client.publish("main/gk-current-temp", _payload);
+      dtostrf(room_target, 6, 2, _payload);
+      client.publish("main/room-target-temp", _payload);
+      dtostrf(ttk_current, 6, 2, _payload);
+      client.publish("main/ttk-current", _payload);
     }
   }
 }
 
 // ***********************************************
-    
 void initialization() {
   pinMode(PIN_GK_RELAY, OUTPUT);
   pinMode(PIN_GK_BLOCK, OUTPUT);
@@ -484,17 +497,13 @@ void initialization() {
 
   // реле выключено - HIGH или RELAY_OFF
   //  ГК вкл/откл
-  gk_is_on = gk_off();
+  digitalWrite(PIN_GK_RELAY, RELAY_OFF);
   // ГК блокировка комнатного датчика, если контроллер активен
-  Block_roomSensor();
+  digitalWrite(PIN_GK_BLOCK, RELAY_OFF);
   // ТТК вкл/откл
-  ttk_is_on = ttk_off();
+  digitalWrite(PIN_TTK_RELAY, RELAY_OFF);
   // водонагреватель реле нормально замкнутые контакты
-  boiler_is_on = boiler_on();
-
-  // Даем бибилотеке знать, к какому пину мы подключили кнопку
-  debouncer.attach(PIN_BUTTON);
-  debouncer.interval(50);  // Интервал, в течение которого мы не будем получать значения с пина
+  digitalWrite(PIN_BOILER_RELAY, RELAY_OFF);
 
   lcd.init();
   lcd.backlight();
@@ -507,17 +516,8 @@ void initialization() {
 void setup() {
   initialization();
   Serial.begin(115200);
-  delay(5000);
-
-  Serial.print("Controller. MQTT, PubSub, WeMos D1. ver.");
-  Serial.println(VERSION);
-  delay(3000);
-  lcd.setCursor(0, 0);
-  lcd.print("Controller.MQTT, PubSub, WeMos D1. ");
-  lcd.setCursor(0, 1);
-  // lcd.print("ver.  04.04.2024");
-  lcd.print(VERSION);
   delay(1000);
+
   Serial.println("------------------------------");
   Serial.println("setup WiFi");
   setup_wifi();
@@ -529,30 +529,13 @@ void setup() {
   if (!tempSensors.getAddress(GKSensorAddress, 1))
     Serial.println("Unable to find address for Device 0");
 
-  gk_current = get_temp(GKSensorAddress, 0);
-  if (gk_current >= 0){
-    gk_sensor_ready = true;
-  }
-  ttk_current = get_temp(TTKSensorAddress, 1);
-  if (ttk_current >= 0){
-    ttk_sensor_ready = true;
-  }
+  client.setServer("localhost", 1883);
 
-  Serial.println("Waiting room temp sensor");
-  Serial.print("room temp=");
-  Serial.println(room_current);
-  lcd.setCursor(0, 0);
-  lcd.print("Wait room temp");
-  lcd.setCursor(0, 1);
-  lcd.print(room_current);
-  lcd.print(VERSION);
-
-
-  // client.setServer("dev.test.io", 1883);
-  client.setServer("dev.rightech.io", 1883);
+  // client.setServer("dev.rightech.io", 1883);
   client.setCallback(handle_message);
 
   Serial.println("Attempting MQTT connection...");
+  Serial.println(broker_url);
   reconnect();
 
   Serial.println();
@@ -583,18 +566,18 @@ void setup() {
   }
 
   if (!controller_is_active) {
-    ttk_is_on = ttk_off();
-    UnBlock_roomSensor();
-    gk_is_on = gk_off();
+    digitalWrite(PIN_TTK_RELAY, RELAY_OFF);
+    digitalWrite(PIN_GK_BLOCK, RELAY_OFF);
+    digitalWrite(PIN_GK_RELAY, RELAY_OFF);
+    digitalWrite(PIN_BOILER_RELAY, RELAY_OFF);
   } else {
     // ГК блокировка комнатного датчика, если контроллер активен
-    // handle_boiler();
+    handle_boiler();
     // digitalWrite(PIN_GK_BLOCK, RELAY_ON);
-    Block_roomSensor();
   }
   digitalWrite(LED_ON, !controller_is_active ? LOW : HIGH);
   if (broker_is_online) {
-    publish_statuses("all");
+    publish_statuses();
   }
 }
 
@@ -602,27 +585,16 @@ void setup() {
 void loop() {
 
   bool statuses_change = false;
-
-  // При потере WiFi
+  // put your main code here, to run repeatedly:
   if (WiFi.status() != WL_CONNECTED) {
+
     Serial.print("WiFi.status() = ");
     Serial.print(WiFi.status());
     setup_wifi();
   }
 
-  //Интервал цикла
   actualTimer = millis();
-  
-  //Мигание светодиода
-  bool current_led_status = digitalRead(LED_ON);
-  if (actualTimer - prevLedTimer >= blinkInterval) {
-    prevLedTimer = actualTimer;
-    if (controller_is_waiting != "" || gk_is_waiting != "" || ttk_is_waiting != "" ) {
-      digitalWrite(LED_ON, !current_led_status);
-    }
-  }
 
-  //Попытки соединиться с брокером
   if (actualTimer - prevBrokerTimer >= intBrokerTimer) {
     prevBrokerTimer = actualTimer;
     if (!client.connected()) {
@@ -634,16 +606,19 @@ void loop() {
   // цикл
   if (broker_is_online) client.loop();
 
+
   if (actualTimer - prevTimer >= intTimer) {
+    // Serial.println("****************Cycle *************************");
     prevTimer = actualTimer;
+    // Serial.println("...loop");
 
     // Регулирование температуры в комнате - контроллер активен и ТТК не включен и не ожидает включения
     if (controller_is_active && !ttk_is_on && ttk_is_waiting == "") {
       // Serial.println("LOOP: check room temp if Controller ACTIVE");
       if (room_current < room_target) {
-        gk_is_waiting = gk_is_on ? gk_is_waiting : "on";
+        gk_is_waiting = "on";
       } else {
-        gk_is_waiting = gk_is_on ? "off" : gk_is_waiting;
+        gk_is_waiting = "off";
       }
       statuses_change = true;
     }
@@ -652,29 +627,24 @@ void loop() {
     delay(300);
 
     gk_current = get_temp(GKSensorAddress, 0);
-    if (gk_current == -127){
-      
-    };
-    //Если контроллер активен, то передаем температуру ГК постоянно
-    char gk_payload[10];
-    dtostrf(gk_current, 6, 2, gk_payload);
+    // Serial.print("gk_current = ");
+    // Serial.println(gk_current);
+    // Serial.println();
     if (broker_is_online) {
-      if (controller_is_active) {
-        // Serial.println("6. publish");
-        client.publish("main/gk-current-temp", gk_payload);
-        //Если контроллер НЕ активен, то передаем температуру ГК если она выше 25 гр
-      } else if (gk_current > 25) {
-        // Serial.println("7. publish");
-        client.publish("main/gk-current-temp", gk_payload);
-      }
+      char gk_payload[10];
+      dtostrf(gk_current, 6, 2, gk_payload);
+      client.publish("main/gk-current-temp", gk_payload);
     }
 
     ttk_current = get_temp(TTKSensorAddress, 1);
+    // Serial.print("ttk_current = ");
+    // Serial.println(ttk_current);
+    // Serial.println();
+
     if (ttk_is_on) {
       if (broker_is_online) {
         char ttk_payload[10];
         dtostrf(ttk_current, 6, 2, ttk_payload);
-        // Serial.println("8. publish");
         client.publish("main/ttk-current-temp", ttk_payload);
       }
     }
@@ -686,7 +656,6 @@ void loop() {
       Serial.println(controller_is_waiting);
       Serial.println();
       handle_controller();
-      // publish_statuses("controller-status"); - это вызывается в handle_controller()
     }
 
     if (gk_is_waiting != "") {
@@ -697,7 +666,6 @@ void loop() {
       Serial.println(gk_is_waiting);
       Serial.println();
       handle_gk();
-      // publish_statuses("gk-status");
     }
 
     if (ttk_is_waiting != "") {
@@ -708,23 +676,31 @@ void loop() {
       Serial.println(ttk_is_waiting);
       Serial.println();
       handle_ttk();
-      // publish_statuses("ttk-status");
     }
 
-    digitalWrite(LED_ON, !controller_is_active ? LOW : HIGH);
-  }
-    // Даем объекту бибилотеки знать, что надо обновить состояние - мы вошли в новый цкил loop
-  debouncer.update();
-
-  // Получаем значение кнопки
-  int value = debouncer.read();
-  if (value == LOW) {
-    if (controller_is_waiting == "") {
-      controller_is_waiting = controller_is_active ? "off" : "on";
-      Serial.println("Button pressed");
+    if (boiler_is_waiting != "") {
+      statuses_change = true;
+      Serial.print("LOOP: Boiler is ");
+      Serial.print(boiler_is_on ? "ON" : "OFF");
+      Serial.print("...  Is waiting to = ");
+      Serial.println(boiler_is_waiting);
+      Serial.println();
+      handle_boiler();
     }
-  }
 
+    if (statuses_change && broker_is_online) {
+      publish_statuses();
+    }
+
+    // lcd_print(0, 0, "TTK =" + ttk_current);
+    // lcd_print(0, 1, "GK =" + gk_current);
+
+    // client.publish("main/controller-satus", gk_is_on ? "on" : "off");
+    // if (controller_is_active) {
+    //   client.publish("main/gk-satus", gk_is_on ? "on" : "off");
+    //   client.publish("main/ttk-satus", ttk_is_on ? "on" : "off");
+    // }
+  }
 }
 
 // ***********************************************
@@ -734,67 +710,4 @@ float get_temp(DeviceAddress sensor_addr, int num) {
   if (tempC == DEVICE_DISCONNECTED_C) {
   }
   return tempC;
-}
-
-// ***********************************************
-void show_lcd_status(String unit, String status) {
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print(unit);
-  lcd.setCursor(0, 1);
-  lcd.print("is going to: ");
-  lcd.setCursor(13, 1);
-  lcd.print(status);
-}
-
-// ***********************************************
-bool ttk_on() {
-  digitalWrite(PIN_TTK_RELAY, RELAY_ON);
-  delay(500);
-  return !digitalRead(PIN_TTK_RELAY);
-}
-
-// ***********************************************
-bool ttk_off() {
-  digitalWrite(PIN_TTK_RELAY, RELAY_OFF);
-  delay(500);
-  return !digitalRead(PIN_TTK_RELAY);
-}
-
-// ***********************************************
-bool gk_on() {
-  digitalWrite(PIN_GK_RELAY, RELAY_ON);
-  delay(500);
-  return !digitalRead(PIN_GK_RELAY);
-}
-
-// ***********************************************
-bool gk_off() {
-  digitalWrite(PIN_GK_RELAY, RELAY_OFF);
-  delay(500);
-  return !digitalRead(PIN_GK_RELAY);
-}
-
-// ***********************************************
-bool boiler_on() {
-  digitalWrite(PIN_BOILER_RELAY, RELAY_OFF);
-  delay(500);
-  return digitalRead(PIN_BOILER_RELAY);
-}
-
-// ***********************************************
-bool boiler_off() {
-  digitalWrite(PIN_BOILER_RELAY, RELAY_ON);
-  delay(500);
-  return digitalRead(PIN_BOILER_RELAY);
-}
-
-// ***********************************************
-void Block_roomSensor() {
-  digitalWrite(PIN_GK_BLOCK, RELAY_ON);
-}
-
-// ***********************************************
-void UnBlock_roomSensor() {
-  digitalWrite(PIN_GK_BLOCK, RELAY_OFF);
 }
